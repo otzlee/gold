@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Flip Book Viewer</title>
+<title>The DTF Prompt Playbook</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -24,7 +24,6 @@
   .brand { font-family: 'Playfair Display', serif; font-size: 1rem; color: var(--gold); }
   .page-badge { font-size: 0.75rem; color: rgba(245,240,232,0.45); letter-spacing: 0.1em; text-transform: uppercase; }
 
-  /* Loader */
   #loader {
     position: fixed; inset: 0; background: var(--bg);
     display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -35,7 +34,6 @@
   .progress-fill { height: 100%; background: linear-gradient(90deg,var(--gold),var(--gold-light)); width: 0%; transition: width 0.2s ease; border-radius: 2px; }
   .loader-status { font-size: 0.78rem; color: rgba(245,240,232,0.4); letter-spacing: 0.08em; text-align: center; max-width: 320px; }
 
-  /* Error */
   #error-box {
     display: none; flex-direction: column; align-items: center;
     gap: 14px; padding: 50px 24px; text-align: center;
@@ -44,11 +42,11 @@
   #error-box p { color: rgba(245,240,232,0.55); font-size: 0.84rem; max-width: 400px; line-height: 1.7; }
   .error-detail {
     background: rgba(255,80,80,0.08); border: 1px solid rgba(255,80,80,0.25);
-    padding: 10px 16px; border-radius: 8px; font-size: 0.75rem;
+    padding: 10px 16px; border-radius: 8px; font-size: 0.72rem;
     color: #ff9999; max-width: 440px; word-break: break-all; font-family: monospace;
+    white-space: pre-wrap; text-align: left;
   }
 
-  /* Flipbook */
   #flipbook-wrap {
     flex: 1; display: flex; align-items: center; justify-content: center;
     padding: 28px 16px 0;
@@ -76,7 +74,6 @@
   .page-wrap:hover .flip-hint { opacity: 1; }
   .flip-hint svg { width: 22px; color: var(--gold-light); opacity: 0.75; }
 
-  /* Controls */
   #controls {
     display: flex; align-items: center; gap: 14px;
     padding: 22px 0 26px; flex-wrap: wrap; justify-content: center;
@@ -98,15 +95,12 @@
 <div id="loader">
   <div class="loader-title">Opening your book…</div>
   <div class="progress-wrap"><div class="progress-fill" id="prog"></div></div>
-  <div class="loader-status" id="status">Downloading PDF…</div>
+  <div class="loader-status" id="status">Connecting…</div>
 </div>
 
 <div id="error-box">
   <h2>Could not load PDF</h2>
-  <p>Dropbox may be blocking the request. Try these steps:</p>
-  <p>1. Open your Dropbox link and go to <strong>Share → Link settings</strong><br>
-     2. Set access to <strong>"Anyone with the link"</strong><br>
-     3. Make sure the URL ends with <strong>&amp;raw=1</strong></p>
+  <p>All download attempts failed. Error log:</p>
   <div class="error-detail" id="error-detail"></div>
 </div>
 
@@ -135,20 +129,21 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
-// ── Config ────────────────────────────────────────────
-const PDF_DIRECT = "https://www.dropbox.com/scl/fi/vuahyiqkfb36glcezjx0t/The-DTF-Prompt-Playbook-PDF-FINAL-compressed.pdf?rlkey=u2g19xpp54uuyd6ji29t1nhb5&st=q7jwjwts&raw=1";
-const PROXIES = [
-  "https://corsproxy.io/?" + encodeURIComponent(PDF_DIRECT),
-  "https://api.allorigins.win/raw?url=" + encodeURIComponent(PDF_DIRECT),
-];
-// ─────────────────────────────────────────────────────
-
-// Disable worker entirely — avoids the postMessage/Headers cloning error
 pdfjsLib.GlobalWorkerOptions.workerSrc = '';
 
-const SCALE = window.innerWidth < 600 ? 0.48 : 0.85;
+const PDF_URL = "https://www.dropbox.com/scl/fi/vuahyiqkfb36glcezjx0t/The-DTF-Prompt-Playbook-PDF-FINAL-compressed.pdf?rlkey=u2g19xpp54uuyd6ji29t1nhb5&raw=1";
 
+// Try proxies FIRST — Dropbox always blocks direct CORS
+const URLS_TO_TRY = [
+  "https://corsproxy.io/?" + encodeURIComponent(PDF_URL),
+  "https://api.allorigins.win/raw?url=" + encodeURIComponent(PDF_URL),
+  "https://thingproxy.freeboard.io/fetch/" + PDF_URL,
+  PDF_URL, // direct last as last resort
+];
+
+const SCALE = window.innerWidth < 600 ? 0.46 : 0.85;
 let pages = [], totalPages = 0, spread = 0;
+
 const flipbookEl = document.getElementById('flipbook');
 const loaderEl   = document.getElementById('loader');
 const errorEl    = document.getElementById('error-box');
@@ -156,18 +151,18 @@ const progEl     = document.getElementById('prog');
 const statusEl   = document.getElementById('status');
 const controlsEl = document.getElementById('controls');
 
-// ── Step 1: fetch PDF as ArrayBuffer, try each URL in order ──
-async function fetchPDF(urls) {
-  const errors = [];
-  for (const url of urls) {
+async function tryFetch(urls) {
+  const log = [];
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i];
+    const label = i === 0 ? 'proxy 1' : i === 1 ? 'proxy 2' : i === 2 ? 'proxy 3' : 'direct';
     try {
-      statusEl.textContent = urls.indexOf(url) === 0
-        ? 'Downloading PDF…'
-        : 'Retrying via proxy…';
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      statusEl.textContent = `Trying ${label}…`;
+      const res = await fetch(url, { mode: 'cors' });
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
 
-      const total = parseInt(res.headers.get('content-length') || '0');
+      statusEl.textContent = `Downloading via ${label}…`;
+      const total  = parseInt(res.headers.get('content-length') || '0');
       const reader = res.body.getReader();
       const chunks = [];
       let loaded = 0;
@@ -177,37 +172,35 @@ async function fetchPDF(urls) {
         if (done) break;
         chunks.push(value);
         loaded += value.length;
-        if (total) progEl.style.width = Math.round((loaded / total) * 50) + '%'; // first 50% = download
+        if (total) progEl.style.width = Math.round((loaded / total) * 50) + '%';
       }
 
-      const blob = new Blob(chunks);
-      return await blob.arrayBuffer();
+      progEl.style.width = '50%';
+      return new Blob(chunks).arrayBuffer();
     } catch (e) {
-      errors.push(`${url.slice(0, 60)}… → ${e.message}`);
-      console.warn('Fetch failed:', e.message);
+      log.push(`[${label}] ${e.message}`);
+      console.warn(`${label} failed:`, e.message);
     }
   }
-  throw new Error(errors.join('\n'));
+  throw new Error(log.join('\n'));
 }
 
-// ── Step 2: parse + render all pages ──
-async function loadAndRender() {
+async function run() {
   try {
-    const arrayBuffer = await fetchPDF([PDF_DIRECT, ...PROXIES]);
+    const buffer = await tryFetch(URLS_TO_TRY);
 
     statusEl.textContent = 'Parsing PDF…';
     progEl.style.width = '52%';
 
-    // Pass raw data — no more network calls needed from PDF.js
-    const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    totalPages = pdfDoc.numPages;
-
+    const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+    totalPages = pdf.numPages;
     pages = [];
+
     for (let i = 1; i <= totalPages; i++) {
       statusEl.textContent = `Rendering page ${i} of ${totalPages}…`;
       progEl.style.width = (52 + Math.round((i / totalPages) * 48)) + '%';
 
-      const page     = await pdfDoc.getPage(i);
+      const page     = await pdf.getPage(i);
       const viewport = page.getViewport({ scale: SCALE });
       const canvas   = document.createElement('canvas');
       canvas.width   = viewport.width;
@@ -221,15 +214,13 @@ async function loadAndRender() {
     showSpread(0);
 
   } catch (err) {
-    loaderEl.style.display  = 'none';
+    loaderEl.style.display   = 'none';
     controlsEl.style.display = 'none';
-    errorEl.style.display   = 'flex';
+    errorEl.style.display    = 'flex';
     document.getElementById('error-detail').textContent = err.message;
-    console.error(err);
   }
 }
 
-// ── Spread rendering ──
 function maxSpread()    { return Math.ceil((totalPages - 1) / 2); }
 function spreadPages(s) {
   if (s === 0) return [1, null];
@@ -243,7 +234,6 @@ function showSpread(s) {
   flipbookEl.innerHTML = '';
   const pair = document.createElement('div');
   pair.className = 'page-pair';
-
   if (s === 0) {
     pair.appendChild(makePage(0, 'solo'));
   } else {
@@ -258,24 +248,18 @@ function showSpread(s) {
 function makePage(idx, side) {
   const wrap = document.createElement('div');
   wrap.className = `page-wrap ${side}`;
-  // clone so canvas can be reused when navigating back
-  const c = pages[idx].cloneNode(true);
-  wrap.appendChild(c);
+  wrap.appendChild(pages[idx].cloneNode(true));
   if (side === 'left')  { addHint(wrap,'lh',arrowL()); wrap.addEventListener('click', flipPrev); }
   if (side === 'right') { addHint(wrap,'rh',arrowR()); wrap.addEventListener('click', flipNext); }
   if (side === 'solo')  { addHint(wrap,'rh',arrowR()); wrap.addEventListener('click', flipNext); }
   return wrap;
 }
-
-function addHint(wrap, cls, svg) {
-  const h = document.createElement('div');
-  h.className = `flip-hint ${cls}`; h.innerHTML = svg; wrap.appendChild(h);
-}
+function addHint(w, cls, svg) { const h = document.createElement('div'); h.className=`flip-hint ${cls}`; h.innerHTML=svg; w.appendChild(h); }
 const arrowL = () => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>`;
 const arrowR = () => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`;
 
 function updateUI(l, r) {
-  const label = spread === 0 ? '1' : `${l || ''}${r ? '–' + r : ''}`;
+  const label = spread === 0 ? '1' : `${l||''}${r?'–'+r:''}`;
   document.getElementById('pg-count').textContent = `${label} / ${totalPages}`;
   document.getElementById('hdr-pg').textContent   = `Page ${label} of ${totalPages}`;
   document.getElementById('b-prev').disabled  = spread <= 0;
@@ -289,13 +273,10 @@ function flipPrev() { if (spread > 0) showSpread(spread - 1); }
 function goFirst()  { showSpread(0); }
 function goLast()   { showSpread(maxSpread()); }
 
-// Keyboard
 document.addEventListener('keydown', e => {
   if (e.key === 'ArrowRight') flipNext();
   if (e.key === 'ArrowLeft')  flipPrev();
 });
-
-// Swipe
 let tx = null;
 document.addEventListener('touchstart', e => tx = e.touches[0].clientX);
 document.addEventListener('touchend',   e => {
@@ -305,7 +286,7 @@ document.addEventListener('touchend',   e => {
   tx = null;
 });
 
-loadAndRender();
+run();
 </script>
 </body>
 </html>
