@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Flip Book Viewer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap');
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #1a1410; --gold: #c9a84c; --gold-light: #e8c96b;
+    --cream: #f5f0e8; --shadow: rgba(0,0,0,0.6);
+  }
+  body {
+    background: var(--bg); font-family: 'DM Sans', sans-serif;
+    color: var(--cream); min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; overflow-x: hidden;
+  }
+  header {
+    width: 100%; padding: 16px 32px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid rgba(201,168,76,0.2);
+  }
+  .brand { font-family: 'Playfair Display', serif; font-size: 1rem; color: var(--gold); }
+  .page-badge { font-size: 0.75rem; color: rgba(245,240,232,0.45); letter-spacing: 0.1em; text-transform: uppercase; }
+
+  /* Loader */
+  #loader {
+    position: fixed; inset: 0; background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 200; gap: 18px; transition: opacity 0.5s;
+  }
+  .loader-title { font-family: 'Playfair Display', serif; font-size: 1.3rem; color: var(--gold); }
+  .progress-wrap { width: 260px; height: 3px; background: rgba(201,168,76,0.2); border-radius: 2px; overflow: hidden; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg,var(--gold),var(--gold-light)); width: 0%; transition: width 0.2s ease; border-radius: 2px; }
+  .loader-status { font-size: 0.78rem; color: rgba(245,240,232,0.4); letter-spacing: 0.08em; text-align: center; max-width: 320px; }
+
+  /* Error */
+  #error-box {
+    display: none; flex-direction: column; align-items: center;
+    gap: 14px; padding: 50px 24px; text-align: center;
+  }
+  #error-box h2 { font-family: 'Playfair Display', serif; color: var(--gold); font-size: 1.3rem; }
+  #error-box p { color: rgba(245,240,232,0.55); font-size: 0.84rem; max-width: 400px; line-height: 1.7; }
+  .error-detail {
+    background: rgba(255,80,80,0.08); border: 1px solid rgba(255,80,80,0.25);
+    padding: 10px 16px; border-radius: 8px; font-size: 0.75rem;
+    color: #ff9999; max-width: 440px; word-break: break-all; font-family: monospace;
+  }
+
+  /* Flipbook */
+  #flipbook-wrap {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    padding: 28px 16px 0;
+  }
+  .page-pair { display: flex; align-items: stretch; }
+  .page-wrap {
+    position: relative; overflow: hidden;
+    box-shadow: 0 28px 70px var(--shadow); cursor: pointer;
+  }
+  .page-wrap.left  { border-radius: 4px 0 0 4px; }
+  .page-wrap.right { border-radius: 0 4px 4px 0; }
+  .page-wrap.solo  { border-radius: 4px; }
+  .page-wrap canvas { display: block; }
+  .spine {
+    width: 5px; flex-shrink: 0; align-self: stretch;
+    background: linear-gradient(180deg,rgba(201,168,76,0.25),rgba(201,168,76,0.06),rgba(201,168,76,0.25));
+  }
+  .flip-hint {
+    position: absolute; top: 0; bottom: 0; width: 56px;
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; transition: opacity 0.2s; pointer-events: none;
+  }
+  .flip-hint.lh { left: 0; background: linear-gradient(90deg,rgba(201,168,76,0.07),transparent); }
+  .flip-hint.rh { right: 0; background: linear-gradient(270deg,rgba(201,168,76,0.07),transparent); }
+  .page-wrap:hover .flip-hint { opacity: 1; }
+  .flip-hint svg { width: 22px; color: var(--gold-light); opacity: 0.75; }
+
+  /* Controls */
+  #controls {
+    display: flex; align-items: center; gap: 14px;
+    padding: 22px 0 26px; flex-wrap: wrap; justify-content: center;
+  }
+  .btn {
+    background: none; border: 1px solid rgba(201,168,76,0.35); color: var(--gold);
+    border-radius: 100px; padding: 9px 20px; font-family: 'DM Sans', sans-serif;
+    font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase;
+    cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 7px;
+  }
+  .btn:hover:not(:disabled) { background: rgba(201,168,76,0.1); border-color: var(--gold); transform: translateY(-1px); }
+  .btn:disabled { opacity: 0.25; cursor: not-allowed; }
+  .btn svg { width: 13px; height: 13px; }
+  .pg-count { font-size: 0.77rem; color: rgba(245,240,232,0.45); letter-spacing: 0.1em; min-width: 90px; text-align: center; }
+</style>
+</head>
+<body>
+
+<div id="loader">
+  <div class="loader-title">Opening your book…</div>
+  <div class="progress-wrap"><div class="progress-fill" id="prog"></div></div>
+  <div class="loader-status" id="status">Downloading PDF…</div>
+</div>
+
+<div id="error-box">
+  <h2>Could not load PDF</h2>
+  <p>Dropbox may be blocking the request. Try these steps:</p>
+  <p>1. Open your Dropbox link and go to <strong>Share → Link settings</strong><br>
+     2. Set access to <strong>"Anyone with the link"</strong><br>
+     3. Make sure the URL ends with <strong>&amp;raw=1</strong></p>
+  <div class="error-detail" id="error-detail"></div>
+</div>
+
+<header>
+  <div class="brand">✦ The DTF Prompt Playbook</div>
+  <div class="page-badge" id="hdr-pg">Loading…</div>
+</header>
+
+<div id="flipbook-wrap"><div id="flipbook"></div></div>
+
+<div id="controls">
+  <button class="btn" id="b-first" onclick="goFirst()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>First
+  </button>
+  <button class="btn" id="b-prev" onclick="flipPrev()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>Prev
+  </button>
+  <span class="pg-count" id="pg-count">— / —</span>
+  <button class="btn" id="b-next" onclick="flipNext()">
+    Next<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+  </button>
+  <button class="btn" id="b-last" onclick="goLast()">
+    Last<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
+  </button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+// ── Config ────────────────────────────────────────────
+const PDF_DIRECT = "https://www.dropbox.com/scl/fi/vuahyiqkfb36glcezjx0t/The-DTF-Prompt-Playbook-PDF-FINAL-compressed.pdf?rlkey=u2g19xpp54uuyd6ji29t1nhb5&st=q7jwjwts&raw=1";
+const PROXIES = [
+  "https://corsproxy.io/?" + encodeURIComponent(PDF_DIRECT),
+  "https://api.allorigins.win/raw?url=" + encodeURIComponent(PDF_DIRECT),
+];
+// ─────────────────────────────────────────────────────
+
+// Disable worker entirely — avoids the postMessage/Headers cloning error
+pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+
+const SCALE = window.innerWidth < 600 ? 0.48 : 0.85;
+
+let pages = [], totalPages = 0, spread = 0;
+const flipbookEl = document.getElementById('flipbook');
+const loaderEl   = document.getElementById('loader');
+const errorEl    = document.getElementById('error-box');
+const progEl     = document.getElementById('prog');
+const statusEl   = document.getElementById('status');
+const controlsEl = document.getElementById('controls');
+
+// ── Step 1: fetch PDF as ArrayBuffer, try each URL in order ──
+async function fetchPDF(urls) {
+  const errors = [];
+  for (const url of urls) {
+    try {
+      statusEl.textContent = urls.indexOf(url) === 0
+        ? 'Downloading PDF…'
+        : 'Retrying via proxy…';
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const total = parseInt(res.headers.get('content-length') || '0');
+      const reader = res.body.getReader();
+      const chunks = [];
+      let loaded = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        loaded += value.length;
+        if (total) progEl.style.width = Math.round((loaded / total) * 50) + '%'; // first 50% = download
+      }
+
+      const blob = new Blob(chunks);
+      return await blob.arrayBuffer();
+    } catch (e) {
+      errors.push(`${url.slice(0, 60)}… → ${e.message}`);
+      console.warn('Fetch failed:', e.message);
+    }
+  }
+  throw new Error(errors.join('\n'));
+}
+
+// ── Step 2: parse + render all pages ──
+async function loadAndRender() {
+  try {
+    const arrayBuffer = await fetchPDF([PDF_DIRECT, ...PROXIES]);
+
+    statusEl.textContent = 'Parsing PDF…';
+    progEl.style.width = '52%';
+
+    // Pass raw data — no more network calls needed from PDF.js
+    const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    totalPages = pdfDoc.numPages;
+
+    pages = [];
+    for (let i = 1; i <= totalPages; i++) {
+      statusEl.textContent = `Rendering page ${i} of ${totalPages}…`;
+      progEl.style.width = (52 + Math.round((i / totalPages) * 48)) + '%';
+
+      const page     = await pdfDoc.getPage(i);
+      const viewport = page.getViewport({ scale: SCALE });
+      const canvas   = document.createElement('canvas');
+      canvas.width   = viewport.width;
+      canvas.height  = viewport.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      pages.push(canvas);
+    }
+
+    loaderEl.style.opacity = '0';
+    setTimeout(() => loaderEl.style.display = 'none', 500);
+    showSpread(0);
+
+  } catch (err) {
+    loaderEl.style.display  = 'none';
+    controlsEl.style.display = 'none';
+    errorEl.style.display   = 'flex';
+    document.getElementById('error-detail').textContent = err.message;
+    console.error(err);
+  }
+}
+
+// ── Spread rendering ──
+function maxSpread()    { return Math.ceil((totalPages - 1) / 2); }
+function spreadPages(s) {
+  if (s === 0) return [1, null];
+  const l = s * 2, r = s * 2 + 1;
+  return [l <= totalPages ? l : null, r <= totalPages ? r : null];
+}
+
+function showSpread(s) {
+  spread = s;
+  const [l, r] = spreadPages(s);
+  flipbookEl.innerHTML = '';
+  const pair = document.createElement('div');
+  pair.className = 'page-pair';
+
+  if (s === 0) {
+    pair.appendChild(makePage(0, 'solo'));
+  } else {
+    if (l) pair.appendChild(makePage(l - 1, 'left'));
+    if (l && r) { const sp = document.createElement('div'); sp.className = 'spine'; pair.appendChild(sp); }
+    if (r) pair.appendChild(makePage(r - 1, 'right'));
+  }
+  flipbookEl.appendChild(pair);
+  updateUI(l, r);
+}
+
+function makePage(idx, side) {
+  const wrap = document.createElement('div');
+  wrap.className = `page-wrap ${side}`;
+  // clone so canvas can be reused when navigating back
+  const c = pages[idx].cloneNode(true);
+  wrap.appendChild(c);
+  if (side === 'left')  { addHint(wrap,'lh',arrowL()); wrap.addEventListener('click', flipPrev); }
+  if (side === 'right') { addHint(wrap,'rh',arrowR()); wrap.addEventListener('click', flipNext); }
+  if (side === 'solo')  { addHint(wrap,'rh',arrowR()); wrap.addEventListener('click', flipNext); }
+  return wrap;
+}
+
+function addHint(wrap, cls, svg) {
+  const h = document.createElement('div');
+  h.className = `flip-hint ${cls}`; h.innerHTML = svg; wrap.appendChild(h);
+}
+const arrowL = () => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>`;
+const arrowR = () => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`;
+
+function updateUI(l, r) {
+  const label = spread === 0 ? '1' : `${l || ''}${r ? '–' + r : ''}`;
+  document.getElementById('pg-count').textContent = `${label} / ${totalPages}`;
+  document.getElementById('hdr-pg').textContent   = `Page ${label} of ${totalPages}`;
+  document.getElementById('b-prev').disabled  = spread <= 0;
+  document.getElementById('b-first').disabled = spread <= 0;
+  document.getElementById('b-next').disabled  = spread >= maxSpread();
+  document.getElementById('b-last').disabled  = spread >= maxSpread();
+}
+
+function flipNext() { if (spread < maxSpread()) showSpread(spread + 1); }
+function flipPrev() { if (spread > 0) showSpread(spread - 1); }
+function goFirst()  { showSpread(0); }
+function goLast()   { showSpread(maxSpread()); }
+
+// Keyboard
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight') flipNext();
+  if (e.key === 'ArrowLeft')  flipPrev();
+});
+
+// Swipe
+let tx = null;
+document.addEventListener('touchstart', e => tx = e.touches[0].clientX);
+document.addEventListener('touchend',   e => {
+  if (tx === null) return;
+  const dx = e.changedTouches[0].clientX - tx;
+  if (Math.abs(dx) > 50) dx < 0 ? flipNext() : flipPrev();
+  tx = null;
+});
+
+loadAndRender();
+</script>
+</body>
+</html>
